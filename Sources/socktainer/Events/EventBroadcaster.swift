@@ -80,7 +80,7 @@ actor EventBroadcaster {
 
     func broadcast(_ event: DockerEvent) {
         for continuation in continuations.values {
-            continuation.yield(event)
+            Task.detached { continuation.yield(event) }
         }
     }
 
