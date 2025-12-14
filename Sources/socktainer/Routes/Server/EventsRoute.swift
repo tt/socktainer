@@ -21,12 +21,34 @@ extension EventsRoute {
             response.headers.add(name: .contentType, value: "application/json")
 
             response.body = .init(stream: { writer in
+                actor StopSignal {
+                    var shouldStop = false
+                    func stop() { shouldStop = true }
+                    func check() -> Bool { shouldStop }
+                }
+                let stopSignal = StopSignal()
                 Task {
                     for await event in stream {
-                        if let json = try? JSONEncoder().encode(event) {
-                            var buffer = req.application.allocator.buffer(capacity: json.count + 1)
-                            buffer.writeBytes(json)
-                            buffer.writeString("\n")
+                        // if Task.isCancelled { break }
+                        if await stopSignal.check() { break }
+                        guard let json = try? JSONEncoder().encode(event) else { continue }
+                        var buffer = req.application.allocator.buffer(capacity: json.count + 1)
+                        buffer.writeBytes(json)
+                        buffer.writeString("\n")
+                        writer.write(.buffer(buffer)).whenFailure { error in
+                            switch error {
+                            case is IOError:
+                                req.logger.info("Client disconnected (broken pipe)")
+                                Task { await stopSignal.stop() }
+                            case let error as ChannelError where error == .ioOnClosedChannel:
+                                req.logger.info("Client disconnected (closed channel)")
+                                Task { await stopSignal.stop() }
+                            default:
+                                // NOTE: Consider improving logging
+                                req.logger.warning("\(event) raised '\(error)'")
+                            }
+                        }
+                            /*
                             do {
                                 try await writer.write(.buffer(buffer)).get()
                             } catch let error as IOError {
@@ -39,7 +61,7 @@ extension EventsRoute {
                                 // NOTE: Consider improving logging
                                 req.logger.warning("\(event) raised '\(error)'")
                             }
-                        }
+                            */
                     }
                 }
             })
